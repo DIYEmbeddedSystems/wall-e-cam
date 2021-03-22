@@ -14,9 +14,7 @@
 #include <Arduino.h>
 #include <Esp.h>                /* Get infos about ESP reset, stack/heap, etc. */
 #include <WiFi.h>               /* WiFi functions */
-#include <AsyncTCP.h>           /* Asynchronous web and websocket servers  */
-#include <ESPAsyncWebServer.h>
-#include <AsyncWebSocket.h>
+#include <WebServer.h>
 
 #include <SPIFFS.h>
 #include <SerialLogger.h>
@@ -25,8 +23,10 @@
 extern SerialLogger logger;     /* logger declared in main.cpp */
 int lastClient = -1;
 
-AsyncWebServer httpServer(80);  /* HTTP server instance */
-AsyncWebSocket wsServer("/ws");  /* Websocket server instance */
+WebServer httpServer(80);
+WebSocketsServer wsServer = WebSocketsServer(81);
+
+static File uploadFile;
 
 
 /**
@@ -34,163 +34,150 @@ AsyncWebSocket wsServer("/ws");  /* Websocket server instance */
  */
 void serversSetup() {
   /* Serve files stored in SPI flash filesystem */
-  httpServer.serveStatic("/", SPIFFS, "/").setDefaultFile("index.html");
+//  httpServer.serveStatic("/", SPIFFS, "/").setDefaultFile("index.html");
   
   /* Server APIs */
-  httpServer.on("/list", HTTP_GET, [](AsyncWebServerRequest *request) 
-    {
-      request->send(200, "application/json", jsonFileSystem());
-    });  
- 
-  httpServer.on("/version", HTTP_GET, [](AsyncWebServerRequest *request) 
-    {
-      request->send(200, "application/json", jsonVersion());
+  httpServer.on("/", HTTP_GET, []() {
+      httpServer.sendHeader("Connection", "close");
+      httpServer.send(200, "text/html", "hello");
     });
 
-  httpServer.on("/heap", HTTP_GET, [](AsyncWebServerRequest *request)
-    {
+  httpServer.on("/list", HTTP_GET, []() {
+      httpServer.send(200, "text/json", jsonFileSystem());
+    });
+ 
+  httpServer.on("/version", HTTP_GET, []() {
+      httpServer.send(200, "application/json", jsonVersion());
+    });
+
+  httpServer.on("/heap", HTTP_GET, []() {
       char msg[256];
       snprintf(msg, sizeof(msg), "{\"heap\":%u}\n", ESP.getFreeHeap());
-      request->send(200, "application/json", msg);
+      httpServer.send(200, "application/json", msg);
     });
 
-  httpServer.on("/delete", HTTP_ANY, [](AsyncWebServerRequest *request) 
-    {
-      if(request->hasParam("path")) {
-        String path = request->getParam("path")->value();
+  httpServer.on("/delete", HTTP_ANY, []() {
+      if (httpServer.hasArg("path")) {
+        String path = httpServer.arg("path");
         if (!path.startsWith("/")) {
           path = "/" + path;
         }
         if (SPIFFS.exists(path)) {
           logger.warn("Deleting file `%s`", path.c_str());
           SPIFFS.remove(path);
-          request->send(200, "text/plain", "ok");
+          httpServer.send(200, "text/plain", "ok");
         } else {
           logger.warn("File `%s` not found", path.c_str());
-          request->send(200, "text/plain", "Not found");
+          httpServer.send(200, "text/plain", "Not found");
         }
       } else{
         logger.warn("Delete: wrong path");
-        request->send(200, "text/plain", "Usage: delete?path=/file.txt");
+        httpServer.send(200, "text/plain", "Usage: delete?path=/file.txt");
       }
     });
 
-  httpServer.on("/upload", HTTP_POST, [](AsyncWebServerRequest *request) {
-      logger.info("Upload endpoint. Sending 200 OK");
-      request->send(200);
-    },
-    handleUpload);
+  httpServer.on("/upload", HTTP_POST, []() {
+        logger.info("Upload finished?");
+        httpServer.send(200, "text/plain", "OK...");
+      }, handleUpload);
 
-  httpServer.onNotFound([](AsyncWebServerRequest *request) {
-      logger.info("http: %s %s%s not found", 
-          (request->method() == HTTP_GET) ? "GET" : (request->method() == HTTP_POST) ? "POST" : "METHOD?",
-          request->host().c_str(),
-          request->url().c_str());
-      request->send(404, "text/plain", "404: Not Found\n");
+  httpServer.onNotFound([]() {
+      String uri = httpServer.uri();
+      if (uri.endsWith("/")) {
+        uri += "index.html";
+      }
+      File file = SPIFFS.open(uri.c_str());
+      if (file) {
+        httpServer.streamFile(file, getContentType(uri));
+      } else {
+        httpServer.send(404, "text/plain", "Not found");
+      }
     });
-
-
-  /* Setup websocket server */
-  wsServer.onEvent(websocketEventHandler);
-  httpServer.addHandler(&wsServer);
 
   /* Start */
   httpServer.begin();
+
+  /* Setup websocket server */
+  wsServer.onEvent(websocketEventHandler);
+  wsServer.begin();
 }
 
 
+void handleUpload() {
+  HTTPUpload& upload = httpServer.upload();
+  String filename = upload.filename;
+  static uint32_t t_start = millis();
 
-void handleUpload(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
-  if (!index) {
-    // open the file on first call and store the file handle in the request object
+  if (upload.status == UPLOAD_FILE_START) {
+    logger.info("Uploading %s", filename.c_str());
     if (!filename.startsWith("/")) {
       filename = "/" + filename;
     }
-    request->_tempFile = SPIFFS.open("/" + filename, "w");
-    logger.info("Opening file %s", filename);
-  }
-
-  if (len) {
-    // stream the incoming chunk to the opened file
-    if (request->_tempFile) {
-      request->_tempFile.write(data, len);
-    } else {
-      logger.error("request->_tempFile closed");
+    if (SPIFFS.exists((char *)filename.c_str())) {
+      SPIFFS.remove((char *)filename.c_str());
     }
-    logger.info("%s: %s", filename, readableSize(index+len));
-  }
-
-  if (final) {
-    if (request->_tempFile) {
-      // close the file handle as the upload is now done
-      request->_tempFile.close();
-      logger.info("Upload finished!");
+    uploadFile = SPIFFS.open(filename.c_str(), FILE_WRITE);
+    if (uploadFile) {
+      logger.info("upload file %s open", filename.c_str());
     } else {
-      logger.error("request->_tempFile closed");
+      logger.warn("upload file %s could not open", filename.c_str());
     }
-    request->send(200, "text/plain", "Upload finished");
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (uploadFile) {
+      uploadFile.write(upload.buf, upload.currentSize);
+    }
+    logger.info("Upload: %s (avg %u kB/s)", 
+        readableSize(upload.totalSize), upload.totalSize / (millis() - t_start));
+  } else if (upload.status == UPLOAD_FILE_END) {
+    logger.info("Upload end");
+    if(uploadFile) {
+      logger.info("Upload successful: %s (%s)", filename.c_str(), readableSize(uploadFile.size()));
+      uploadFile.close();
+    } else {
+      logger.warn("Where's our file?");
+    }
   }
 }
-
 
 /**
  * @brief Do some housekeeping 
  * Note: requests and message handling is done in another context
  */
 void serversLoop() {
-  static uint32_t next_cleanup_ms = 0;
-  if ((int32_t)(millis() - next_cleanup_ms) > 0) {
-    wsServer.cleanupClients();
-    next_cleanup_ms += 1000;
-  }
+  httpServer.handleClient();
+  wsServer.loop();
 }
 
 /**
  * @brief User callback that handles generic websocket events
- * @param server
- * @param client
- * @param eventType
- * @param arg
- * @param payload
- * @param len
- */
-void websocketEventHandler(AsyncWebSocket * server, AsyncWebSocketClient * client, 
-    AwsEventType eventType, void * arg, uint8_t *payload, size_t len) {
-  
-  AwsFrameInfo *frameInfo;
+  */
+void websocketEventHandler(uint8_t num, WStype_t eventType, uint8_t *payload, size_t len) {
 
   switch (eventType) {
-  case WS_EVT_CONNECT:
-    logger.info("[WS] New client #%u from %s", client->id(), client->remoteIP().toString().c_str());
-    lastClient = client->id();
+  case WStype_CONNECTED:
+    logger.info("[WS] New client #%u from %s", num, wsServer.remoteIP(num).toString().c_str());
+    lastClient = num;
     break;
 
-  case WS_EVT_DISCONNECT:
-    logger.info("[WS] Client #%u has left", client->id());
-    if (lastClient == client->id()) {
+  case WStype_DISCONNECTED:
+    logger.info("[WS] Client #%u has left", num);
+    if (lastClient == num) {
       lastClient = -1;
     }
     break;
 
-  case WS_EVT_PONG:
-    logger.info("[WS] Received pong");
+  case WStype_TEXT:
+    lastClient = num;
+    logger.info("[WS] Text frame `%.*s`", len, payload);
     break;
 
-  case WS_EVT_DATA:
-    lastClient = client->id();
-    frameInfo = (AwsFrameInfo *)arg;
-    // is this frame a full unfragmented websocket TEXT frame?
-    if (!frameInfo->final || frameInfo->index != 0 || frameInfo->len != len) {
-      logger.warn("[WS] frame fragmentation not supported");
-    } else if (frameInfo->opcode != WS_TEXT) {
-      logger.info("[WS] Binary frame");
-    } else {
-      logger.info("[WS] Text frame `%.*s`", len, payload);
-    }
+  case WStype_BIN:
+    lastClient = num;
+    logger.info("[WS] Binary frame (len %u)", len);
     break;
 
-  case WS_EVT_ERROR:
-    logger.warn("[WS] client #%u error #%u `%.*s`", client->id(), *(uint16_t*)arg, len, (char *)payload);
+  case WStype_ERROR:
+    logger.warn("[WS] client #%u ERROR", num);
     break;
 
   default:
@@ -276,4 +263,23 @@ const char *readableSize(int size)
     snprintf(buffer, sizeof(buffer)-1, "%uB", size);
   }
   return buffer;
+}
+
+/**
+ * @brief Get the content-type field from file extension
+ */
+String getContentType(String filename){
+  if(filename.endsWith(".htm")) return "text/html";
+  else if(filename.endsWith(".html")) return "text/html";
+  else if(filename.endsWith(".css")) return "text/css";
+  else if(filename.endsWith(".js")) return "application/javascript";
+  else if(filename.endsWith(".png")) return "image/png";
+  else if(filename.endsWith(".gif")) return "image/gif";
+  else if(filename.endsWith(".jpg")) return "image/jpeg";
+  else if(filename.endsWith(".ico")) return "image/x-icon";
+  else if(filename.endsWith(".xml")) return "text/xml";
+  else if(filename.endsWith(".pdf")) return "application/x-pdf";
+  else if(filename.endsWith(".zip")) return "application/x-zip";
+  else if(filename.endsWith(".gz")) return "application/x-gzip";
+  return "text/plain";
 }

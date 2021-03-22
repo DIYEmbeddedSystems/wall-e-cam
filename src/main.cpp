@@ -18,9 +18,8 @@
 #include "soc/rtc_cntl_reg.h"  /* Disable brownout detection */
 
 #include <WiFi.h>               /* WiFi functions */
-#include <AsyncTCP.h>           /* Asynchronous web and websocket servers  */
-#include <ESPAsyncWebServer.h>
-#include <AsyncWebSocket.h>
+#include <WebServer.h>
+#include <WebSocketsServer.h>
 
 #include <FS.h>                 /* Generic filesystem functions */
 #include <SPIFFS.h>             /* SPI flash filesystem */
@@ -84,8 +83,8 @@ void setup() {
   // Setup camera
   esp32cam::Config cfg;
   cfg.setPins(esp32cam::pins::AiThinker);
-  cfg.setResolution(esp32cam::Resolution::find(320, 200));
-  cfg.setBufferCount(1);
+  cfg.setResolution(esp32cam::Resolution::find(800, 600));
+  cfg.setBufferCount(2);
   cfg.setJpeg(80);
   if (esp32cam::Camera.begin(cfg)) {
     logger.info("Camera is up");
@@ -123,38 +122,54 @@ void setup() {
   // Setup web and websocket servers
   serversSetup();
 
-  httpServer.on("/picture.jpg", HTTP_GET, [](AsyncWebServerRequest *request) {
-      esp32cam::Resolution hiRes = esp32cam::Resolution::find(800, 600);
-      if (!esp32cam::Camera.changeResolution(hiRes)) {
-        logger.warn("Could not set resolution");
-      }
-      std::unique_ptr<esp32cam::Frame> frame = esp32cam::capture();
-      if (frame) {
-        logger.info("Captured image: %u x %u, %s", 
-            frame->getWidth(), frame->getHeight(), readableSize(frame->size()));
+  httpServer.on("/picture.jpg", HTTP_GET, []() {
+//    esp32cam::Resolution hiRes = esp32cam::Resolution::find(800, 600);
+//    if (!esp32cam::Camera.changeResolution(hiRes)) {
+//      logger.warn("Could not set resolution");
+//    }
+    std::unique_ptr<esp32cam::Frame> frame = esp32cam::capture();
+    if (frame) {
+      logger.info("Captured image: %u x %u, %s", 
+          frame->getWidth(), frame->getHeight(), readableSize(frame->size()));
+      
+      httpServer.setContentLength(frame->size());
+      httpServer.send(200, "image/jpeg");
 
-        AsyncWebServerResponse *response = request->beginChunkedResponse("image/jpeg", [&](uint8_t *buf, size_t maxLen, size_t index) -> size_t {
-          if (frame->size() - index > maxLen) {
-            maxLen = frame->size() - index;
-          }
-          memcpy(buf, &frame->data()[index], maxLen);
-          return maxLen;
-        });
-
-        request->send(response);
-        //request->send(200, "image/jpeg", (const uint8_t *)frame->data(), (size_t)frame->size());
+      WiFiClient client = httpServer.client();
+      if (frame->writeTo(client)) {
         logger.info("Image sent");
       } else {
-        logger.warn("Camera capture failed!");
-        request->send(503, "text/plain", "capture failed");
-      } 
+        logger.info("Image partially sent");
+      }
+
+      
+    } else {
+      logger.warn("Camera capture failed!");
+      httpServer.send(503, "text/plain", "capture failed");
+    } 
   });
-}
+
+  httpServer.on("/resolution", HTTP_GET, []() {
+    if (httpServer.hasArg("width")) {
+      int width = httpServer.arg("width").toInt();
+      esp32cam::Resolution res = esp32cam::Resolution::find(width, width / 2);
+      if (esp32cam::Camera.changeResolution(res)) {
+        logger.info("Changed resolution to %u x %u", res.getWidth(), res.getHeight());
+        httpServer.send(200, "Resolution changed");
+      } else {
+        logger.warn("Could not set resolution");
+        httpServer.send(200, "Could not set resolution");
+      }
+    }
+  });
+ }
 
 /**
  * @brief Main loop
  */
 void loop() {
+  serversLoop();
+
   blink(50, 950);
 
   static uint32_t next_report_ms = 0;
@@ -162,23 +177,19 @@ void loop() {
     logger.info("Still alive at %ums", millis());
   }
 
-  if (wsServer.count() > 0) {
+  if (wsServer.connectedClients() > 0) {
     static uint32_t next_frame_ms = 0;
     // We have a websocket client connected: send him video pictures
     if (periodicTrigger(&next_frame_ms, 100)) {
       uint32_t t0_us = micros();
-      esp32cam::Resolution loRes = esp32cam::Resolution::find(640,480);
-      esp32cam::Camera.changeResolution(loRes);
       std::unique_ptr<esp32cam::Frame> frame = esp32cam::capture();
       uint32_t t1_us = micros();
 
       if (frame && ESP.getFreeHeap() > 60000) {
-        // Ugly workaround: 
-        // it seems that AsyncWebSocket::binaryAll crashes at `new AsyncWebSocketMessageBuffer()`, when heap falls below 60kB...
-        wsServer.binaryAll(frame->data(), frame->size());
+        wsServer.broadcastBIN(frame->data(), frame->size());
         uint32_t t2_us = micros();
-        logger.info("capture %u us, binaryAll %u us, picture %u B, heap %u B, PSRAM %u B", 
-            t1_us  - t0_us, t2_us - t1_us,
+        logger.info("capture %u ms, binaryAll %u ms, picture %u B, heap %u B, PSRAM %u B", 
+            (t1_us  - t0_us)/1000, (t2_us - t1_us)/1000,
             frame->size(), ESP.getFreeHeap(), ESP.getFreePsram());
       } else {
         logger.warn("wsStream: capture failed");

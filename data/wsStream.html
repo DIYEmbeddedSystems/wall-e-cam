@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Test websocket-based video stream</title>
+  </head>
+  <body>
+    <h1>Test websocket-based video stream</h1>
+    <img id="stream" src="">Video</img>
+  </body>
+
+  <script>
+
+var socket = new WebSocket("ws://192.168.1.201:81");
+var lastFrame = new Date();
+
+socket.binaryType = "arraybuffer";
+socket.onopen = function() {
+  console.log("Socket open");
+  socket.send("Hello");
+}
+socket.onmessage = function(msg) {
+  var t = new Date();
+  var bytes = new Uint8Array(msg.data);
+  var len = bytes.byteLength;
+  var binary = '';
+  for (var i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  var img = document.getElementById("stream");
+  img.src = 'data:image/jpg;base64,' + window.btoa(binary);
+
+  var fps = 1000. / (t - lastFrame);
+  console.log("Image converted. " + fps + " FPS");
+  lastFrame = t;
+  socket.send("Still there at " + new Date());
+}
+
+
+  </script>
+</html>
