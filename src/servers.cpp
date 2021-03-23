@@ -127,11 +127,11 @@ void handleUpload() {
       uploadFile.write(upload.buf, upload.currentSize);
     }
     logger.info("Upload: %s (avg %u kB/s)", 
-        readableSize(upload.totalSize), upload.totalSize / (millis() - t_start));
+        readableSize(upload.totalSize).c_str(), upload.totalSize / (millis() - t_start));
   } else if (upload.status == UPLOAD_FILE_END) {
     logger.info("Upload end");
     if(uploadFile) {
-      logger.info("Upload successful: %s (%s)", filename.c_str(), readableSize(uploadFile.size()));
+      logger.info("Upload successful: %s (%s)", filename.c_str(), readableSize(uploadFile.size()).c_str());
       uploadFile.close();
     } else {
       logger.warn("Where's our file?");
@@ -198,7 +198,6 @@ String jsonFileSystem() {
   s += "\", \"files\":[";
   s += jsonDirectory(SPIFFS.open("/"));
   s += "]}\n";
-  logger.info("filesJSON: %s", s.c_str());
   return s;
 }
 
@@ -238,7 +237,7 @@ String jsonDirectory(File dir) {
       s += "{\"filename\":\"";
       s += f.name();
       s += "\", \"size\":\"";
-      s += String(readableSize(f.size()));
+      s += readableSize(f.size());
       s += "\"}";
     }
     ++count;
@@ -252,9 +251,9 @@ String jsonDirectory(File dir) {
  * @param size in bytes
  * @return pointer to (static!) string, e.g. "3.4kiB" for 35651584 bytes
  */
-const char *readableSize(int size)
+String readableSize(int size)
 {
-  static char buffer[128];
+  char buffer[128];
   if (size > 1024*1024) {
     snprintf(buffer, sizeof(buffer)-1, "%.1fMiB", size*1.0/1024/1024);
   } else if (size > 1024) {
@@ -262,7 +261,7 @@ const char *readableSize(int size)
   } else {
     snprintf(buffer, sizeof(buffer)-1, "%uB", size);
   }
-  return buffer;
+  return String(buffer);
 }
 
 /**

@@ -2,38 +2,99 @@
 <html>
   <head>
     <title>Test websocket-based video stream</title>
+    <style>
+html { 
+  overflow:hidden; 
+  text-align:center;
+}
+body { 
+  font-family: Arial, Calibri; 
+  width: 100%; 
+  height: 100%;
+  margin: 0px;
+  padding: 0px; 
+  color: #000;
+  background-color:#fed;
+} 
+.btn {
+  border: none;
+  color: #fff;
+  padding: 2px 10px;
+  font-size: 15px;
+  text-align: center;
+  text-decoration: none;
+  display: inline-block;
+  margin: 4px auto;
+  border-radius: 8px;
+  opacity: 0.7;
+}
+.btn.red {
+  background-color: #833;
+}
+.btn.green {
+  background-color: #383;
+}
+.btn.blue {
+  background-color: #338;
+}
+    </style>
   </head>
   <body>
     <h1>Test websocket-based video stream</h1>
-    <img id="stream" src="">Video</img>
+    <p><textarea id="urlTxt" rows="1" cols="35">ws://192.168.1.201:81</textarea></p>
+    <p><button class="btn green" id="connectBtn">Connect</button></p>
+    <p><img id="streamImg" src="">Video</img></p>
   </body>
-
   <script>
 
-var socket = new WebSocket("ws://192.168.1.201:81");
+var connectBtn = document.getElementById("connectBtn");
+var streamImg = document.getElementById("streamImg");
+var urlTxt = document.getElementById("urlTxt");
+
+
+var socket = undefined;
 var lastFrame = new Date();
 
-socket.binaryType = "arraybuffer";
-socket.onopen = function() {
-  console.log("Socket open");
-  socket.send("Hello");
-}
-socket.onmessage = function(msg) {
-  var t = new Date();
-  var bytes = new Uint8Array(msg.data);
-  var len = bytes.byteLength;
-  var binary = '';
-  for (var i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  var img = document.getElementById("stream");
-  img.src = 'data:image/jpg;base64,' + window.btoa(binary);
+connectBtn.onclick = function() {
+  if (socket != undefined) {
+    console.log("Closing previous connection");
+    socket.close();
+    socket = undefined;
+    connectBtn.innerHTML = 'Connect';
+    connectBtn.classList.remove('red');
+    connectBtn.classList.add('green');
+  } else {
+    var url = urlTxt.value;
+    console.log("Connecting to " + url);
+    socket = new WebSocket(url);
+    socket.binaryType = "arraybuffer";
 
-  var fps = 1000. / (t - lastFrame);
-  console.log("Image converted. " + fps + " FPS");
-  lastFrame = t;
-  socket.send("Still there at " + new Date());
+    socket.onopen = function() {
+      lastFrame = new Date();
+      socket.send("Hello");
+      console.log("Websocket connected");
+      connectBtn.innerHTML = 'Disconnect';
+      connectBtn.classList.add('red');
+      connectBtn.classList.remove('green')    
+    }
+    socket.onmessage = function(msg) {
+      var t = new Date();
+      var bytes = new Uint8Array(msg.data);
+      var len = bytes.byteLength;
+      var binary = '';
+      for (var i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+
+      streamImg.src = 'data:image/jpg;base64,' + window.btoa(binary);
+
+      var fps = 1000. / (t - lastFrame);
+      console.log("" + fps.toFixed(2) + " FPS");
+      lastFrame = t;
+    }
+  }
 }
+
 
 
   </script>

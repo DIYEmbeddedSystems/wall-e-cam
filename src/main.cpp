@@ -28,6 +28,9 @@
 
 #include <esp32cam.h>           /* Camera interface */
 
+#include <freertos/task.h>
+#include <esp_task_wdt.h>
+
 /* ~~~~~  Project-local dependencies */
 #include <credentials.h>        /* Wifi access point credentials, IP configuration macros */
 #include "trigger.h"            /* Utility for periodic tasks */
@@ -36,6 +39,8 @@
 #include <SerialLogger.h>       /* Log to Serial */
 
 #include "servers.h"
+
+
 
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     Function declarations / prototypes
@@ -71,6 +76,13 @@ void setup() {
   logger.setContext("ESP32-CAM");
   logger.info("\n\n\n");
   logger.info("Application " __FILE__ " compiled " __DATE__ " at " __TIME__ );
+  logger.info("Version: %s", jsonVersion().c_str());
+
+  if (psramFound()) {
+    logger.info("This chip has PSRAM %u B (%u free)", ESP.getPsramSize(), ESP.getFreePsram());
+  } else {
+    logger.info("This chip has no PSRAM");
+  }
 
   // Setup SPIFFS filesystem
   if(!SPIFFS.begin()){ 
@@ -123,10 +135,6 @@ void setup() {
   serversSetup();
 
   httpServer.on("/picture.jpg", HTTP_GET, []() {
-//    esp32cam::Resolution hiRes = esp32cam::Resolution::find(800, 600);
-//    if (!esp32cam::Camera.changeResolution(hiRes)) {
-//      logger.warn("Could not set resolution");
-//    }
     std::unique_ptr<esp32cam::Frame> frame = esp32cam::capture();
     if (frame) {
       logger.info("Captured image: %u x %u, %s", 
@@ -162,7 +170,9 @@ void setup() {
       }
     }
   });
+
  }
+
 
 /**
  * @brief Main loop
@@ -174,23 +184,35 @@ void loop() {
 
   static uint32_t next_report_ms = 0;
   if (periodicTrigger(&next_report_ms, 10000)) {
-    logger.info("Still alive at %ums", millis());
+    logger.info("Core %u, free heap %s (max %s), free PSRAM %s (max %s), %u tasks", 
+        xPortGetCoreID(),
+        readableSize(ESP.getFreeHeap()).c_str(),
+        readableSize(ESP.getMaxAllocHeap()).c_str(),
+        readableSize(ESP.getFreePsram()).c_str(), 
+        readableSize(ESP.getMaxAllocPsram()).c_str(), 
+        uxTaskGetNumberOfTasks()
+        );
   }
 
   if (wsServer.connectedClients() > 0) {
     static uint32_t next_frame_ms = 0;
-    // We have a websocket client connected: send him video pictures
-    if (periodicTrigger(&next_frame_ms, 100)) {
+    // We have a websocket client connected: send pictures
+    
+    if (periodicTrigger(&next_frame_ms, 1000/24)) { // Don't try more than 24 frames per second
       uint32_t t0_us = micros();
       std::unique_ptr<esp32cam::Frame> frame = esp32cam::capture();
       uint32_t t1_us = micros();
 
-      if (frame && ESP.getFreeHeap() > 60000) {
+      if (frame) {
         wsServer.broadcastBIN(frame->data(), frame->size());
         uint32_t t2_us = micros();
-        logger.info("capture %u ms, binaryAll %u ms, picture %u B, heap %u B, PSRAM %u B", 
-            (t1_us  - t0_us)/1000, (t2_us - t1_us)/1000,
-            frame->size(), ESP.getFreeHeap(), ESP.getFreePsram());
+        logger.info("%u clients, capture %u ms, websocket %u ms, picture %s, heap %s, PSRAM %s", 
+            wsServer.connectedClients(),
+            (t1_us  - t0_us)/1000, 
+            (t2_us - t1_us)/1000,
+            readableSize(frame->size()).c_str(), 
+            readableSize(ESP.getFreeHeap()).c_str(), 
+            readableSize(ESP.getFreePsram()).c_str());
       } else {
         logger.warn("wsStream: capture failed");
       }

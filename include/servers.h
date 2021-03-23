@@ -32,7 +32,7 @@ void websocketEventHandler(uint8_t num, WStype_t eventType, uint8_t *payload, si
 String jsonVersion();
 String jsonFileSystem();
 String jsonDirectory(File dir);
-const char *readableSize(int size);
+String readableSize(int size);
 String getContentType(String filename);
 
 #endif
