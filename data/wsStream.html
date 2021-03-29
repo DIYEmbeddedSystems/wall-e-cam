@@ -2,6 +2,12 @@
 <html>
   <head>
     <title>Test websocket-based video stream</title>
+
+    <meta http-equiv="Access-Control-Allow-Headers" content="Origin, X-Requested-With, Content-Type, Accept">
+    <meta http-equiv="Access-Control-Allow-Methods" content="GET,POST,PUT,DELETE,OPTIONS">
+    <meta http-equiv="Acces-Control-Allow-Origin" content="*">
+
+    <link rel="icon" href="data:;base64,iVBORw0KGgo=">
     <style>
 html { 
   overflow:hidden; 
@@ -38,22 +44,37 @@ body {
   background-color: #338;
 }
     </style>
-  </head>
+
+<!-- Load TensorFlow.js https://cdn.jsdelivr.net/npm/@tensorflow/tfjs -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+<!-- Load Posenet https://cdn.jsdelivr.net/npm/@tensorflow-models/posenet -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/posenet"></script> 
+<!-- <script src="http://192.168.1.201/tf.js"></script> -->
+<!-- <script src="http://192.168.1.201/posenet.js"></script> -->
+</head>
   <body>
     <h1>Test websocket-based video stream</h1>
     <p><textarea id="urlTxt" rows="1" cols="35">ws://192.168.1.201:81</textarea></p>
     <p><button class="btn green" id="connectBtn">Connect</button></p>
-    <p><img id="streamImg" src="">Video</img></p>
+    <p>
+      <div style="display:none;">
+        <img id="streamImg" width="640" height="480" src="">Video</img>
+      </div>
+      <canvas id="canvas" width="640" height="480"></canvas>
+    </p>
   </body>
   <script>
 
-var connectBtn = document.getElementById("connectBtn");
-var streamImg = document.getElementById("streamImg");
-var urlTxt = document.getElementById("urlTxt");
-
+const connectBtn = document.getElementById("connectBtn");
+const streamImg = document.getElementById("streamImg");
+const urlTxt = document.getElementById("urlTxt");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
 
 var socket = undefined;
 var lastFrame = new Date();
+
+var myPoseNet = undefined;
 
 connectBtn.onclick = function() {
   if (socket != undefined) {
@@ -95,7 +116,64 @@ connectBtn.onclick = function() {
   }
 }
 
+function drawPoint(ctx, x, y, r, c) {
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, 2 * Math.PI);
+  ctx.fillStyle = c;
+  ctx.fill();
+}
 
+function drawSegment(ctx, x1, y1, x2, y2, c, w) {
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.lineWidth = w;
+  ctx.strokeStyle = c;
+  ctx.stroke();
+}
+
+function drawPose(ctx, pose) {
+  // Draw skeleton
+  const segments = posenet.getAdjacentKeyPoints(pose.keypoints, 0.1);
+  segments.forEach((kp) => {
+      drawSegment(ctx,
+          kp[0].position.x, kp[0].position.y, 
+          kp[1].position.x, kp[1].position.y,
+          'aqua', 1);
+  });
+  // Draw key points
+  pose.keypoints.forEach((kp) => {
+    drawPoint(ctx, kp.position.x, kp.position.y, 3, 'aqua');
+  });
+
+  // Highlight nose & wrists
+  drawPoint(ctx, pose.keypoints[0].position.x, pose.keypoints[0].position.y, 6, 'red'); // nose
+  drawPoint(ctx, pose.keypoints[9].position.x, pose.keypoints[9].position.y, 6, 'green'); // wrists
+  drawPoint(ctx, pose.keypoints[10].position.x, pose.keypoints[10].position.y, 6, 'blue'); // wrists
+}
+
+
+posenet.load().then(function(net) {
+  console.log("PoseNet loaded!");
+  myPoseNet = net;
+});
+
+timer = setInterval(function () {
+    ctx.drawImage(streamImg, 0, 0);
+    if (myPoseNet != undefined) {
+      console.log("Send streamImage to posenet: " + streamImg.width + "x" + streamImg.height);
+      myPoseNet.estimateSinglePose(streamImg, {flipHorizontal: false}).then(function(pose){
+        if (pose.score > 0.5) {
+          console.log("Found pose: ");
+          console.log(pose.score);
+          drawPose(ctx, pose);
+          ctx.font = '15px Arial';
+          ctx.fillStyle = '#000';
+          ctx.fillText(fps.toFixed(2), 0, 0);
+        }
+      });
+    }
+  }, 100);
 
   </script>
 </html>

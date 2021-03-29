@@ -37,10 +37,12 @@
 
 #include <ArduinoLogger.h>      /* Logging library */
 #include <SerialLogger.h>       /* Log to Serial */
-
+#include <Audio.h>
 #include "servers.h"
 
-
+#define I2S_DOUT      25
+#define I2S_BCLK      27
+#define I2S_LRC       26
 
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     Function declarations / prototypes
@@ -53,6 +55,8 @@ void blink(uint32_t high_ms, uint32_t low_ms);
     Global variables & object instances
    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 SerialLogger logger = SerialLogger::getDefault(); // log to Serial only (note: seems UDPLogger doesn't work here)
+
+
 
 const int pin_red_led = 33;   // red LED on the back on pin nb. 33
 const int pin_flash_led = 4;  // flash LED on pin nb. 4
@@ -95,7 +99,7 @@ void setup() {
   // Setup camera
   esp32cam::Config cfg;
   cfg.setPins(esp32cam::pins::AiThinker);
-  cfg.setResolution(esp32cam::Resolution::find(800, 600));
+  cfg.setResolution(esp32cam::Resolution::find(320, 200));
   cfg.setBufferCount(2);
   cfg.setJpeg(80);
   if (esp32cam::Camera.begin(cfg)) {
@@ -108,11 +112,11 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.setHostname("ESP32-Cam");
 
-  // Mind the arguments order! Might not be the same as in ESP8266...
+  /* Beware! WiFi.config() order of parameters differs between ESP8266 and ESP32 */
   WiFi.config(
     IPAddress(192,168,1,201),     /* my IP address */
-    IPAddress(192,168,1,178),     /* gateway */
-    IPAddress(255,255,255,0),     /* subnet */    
+    IPAddress(IP_CFG_GATEWAY),     /* gateway */
+    IPAddress(IP_CFG_SUBNET),     /* subnet */    
     IPAddress(8,8,8,8));          /* DNS */
   WiFi.disconnect();
  
@@ -171,6 +175,10 @@ void setup() {
     }
   });
 
+  audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
+  audio.setVolume(12); // 0...21
+  audio.connecttoFS(SPIFFS, "/test.mp3");
+
  }
 
 
@@ -215,6 +223,27 @@ void loop() {
             readableSize(ESP.getFreePsram()).c_str());
       } else {
         logger.warn("wsStream: capture failed");
+      }
+    }
+  }
+}
+
+/**
+ * @brief This handler is called when a text message is received from a websocket client 
+ */
+void handleWebsocketText(uint8_t num, uint8_t *payload, size_t len) {
+  payload[len] = '\0';
+  String str((char *)payload);
+
+  if (str.startsWith("setwidth")) {
+    String widthStr = str.substring(8);
+    int width = widthStr.toInt();
+    if (100 < width && width < 1000) {
+      esp32cam::Resolution res = esp32cam::Resolution::find(width, width / 2);
+      if (esp32cam::Camera.changeResolution(res)) {
+        logger.info("Changed resolution to %u x %u", res.getWidth(), res.getHeight());
+      } else {
+        logger.info("Failed to change resolution");
       }
     }
   }

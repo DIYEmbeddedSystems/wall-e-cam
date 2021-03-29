@@ -21,6 +21,9 @@
 
 
 extern SerialLogger logger;     /* logger declared in main.cpp */
+
+extern void handleWebsocketText(uint8_t num, uint8_t *payload, size_t len);  /* text frame handler defined in application */
+
 int lastClient = -1;
 
 WebServer httpServer(80);
@@ -169,6 +172,7 @@ void websocketEventHandler(uint8_t num, WStype_t eventType, uint8_t *payload, si
   case WStype_TEXT:
     lastClient = num;
     logger.info("[WS] Text frame `%.*s`", len, payload);
+    handleWebsocketText(num, payload, len);
     break;
 
   case WStype_BIN:
